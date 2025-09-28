@@ -90,7 +90,7 @@ def main():
 
         merged = merged.sort_values(["ts"]).drop_duplicates(subset=["ts"]).reset_index(drop=True)
 
-        out_path = OUT_DIR / f"{symbol}.csv"
+        out_path = OUT_DIR / f"{symbol}.csv.gz"
         merged.to_csv(out_path, index=False)
         print(f"[DONE] {symbol}: {len(merged):,} rows (from {total_rows:,}) -> {out_path}")
 

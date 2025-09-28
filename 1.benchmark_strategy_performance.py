@@ -27,7 +27,7 @@ if __name__ == "__main__":
     )
 
     # data
-    csv_path = "data/merged/BTC-USDC.csv"
+    csv_path = "data/merged/BTC-USDC.csv.gz"
     out_put_csv_name = "performance/benchmark_BTC-USDC.csv"
     out_put_report_name = "performance/benchmark_BTC-USDC_report.html"
     initial_cash = 100_000.0
