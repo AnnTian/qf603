@@ -8,6 +8,8 @@ from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from volmodels import VolatilityModelBase
+
 
 def round_to_tick(price: float, tick: float) -> float:
     return math.floor(price / tick + 1e-12) * tick
@@ -30,11 +32,12 @@ class ASConfig:
     k: float = 8.0
     tau: float = 1.0
 
+    # This is to make sure the spread stays within a range
     spread_cap_frac: float = 0.001   # 0.1% of mid
     min_spread_frac: float = 0.0002  # 0.02% of mid
 
-    max_order_notional_frac: float = 0.01  # 1% of equity
-    min_cash_buffer_frac: float = 0.05
+    max_order_notional_frac: float = 0.01  # 1% of equity # max order size for each order
+    min_cash_buffer_frac: float = 0.05 # 5% of total cash left in buffer
 
     vol_scale_k: float = 1.0               # higher -> smaller order qty
     target_inv_frac: float = 0.0           # neutral
@@ -42,34 +45,6 @@ class ASConfig:
     max_inv_frac: float = 0.25             # 25% * Equity
     hard_liq_frac: float = 0.35
 
-# ============ Volatility Model ============
-class VolatilityModelBase:
-    def update(self, ts: pd.Timestamp, mid: float, bid: float, ask: float) -> None: ...
-    def predict(self) -> float: ...
-
-class ExternalVolModel(VolatilityModelBase):
-    def __init__(self, predictor: Callable[[], float],
-                 on_update: Optional[Callable[[pd.Timestamp, float, float, float], None]] = None):
-        self._predictor = predictor
-        self._on_update = on_update
-        self._sigma = 0.0
-    def update(self, ts, mid, bid, ask):
-        if self._on_update: self._on_update(ts, mid, bid, ask)
-        self._sigma = float(self._predictor())
-    def predict(self) -> float:
-        return self._sigma
-
-class EWMAVolModel(VolatilityModelBase):
-    def __init__(self, lam: float = 0.97):
-        self.lam, self.prev_mid, self.var, self._sigma = lam, None, 0.0, 0.0
-    def update(self, ts, mid, bid, ask):
-        if self.prev_mid is None: self.prev_mid = mid; return
-        r = math.log((mid + 1e-12)/(self.prev_mid + 1e-12))
-        self.var = self.lam*self.var + (1-self.lam)*r*r
-        self.prev_mid = mid
-        self._sigma = math.sqrt(self.var)
-    def predict(self) -> float:
-        return self._sigma
 
 # ============ A-S Simulator ============
 class MMSimulator:
@@ -98,21 +73,28 @@ class MMSimulator:
 
     # —— A-S quote ——
     def get_as_quotes(self, mid: float, sigma: float, drift: float = 0.0):
+        # A-S Base Model
         q, g, k, tau = self.inv, self.cfg.gamma, self.cfg.k, self.cfg.tau
         r_t = mid - q * g * (sigma**2) * tau + drift
         half = (1.0/k)*np.log(1.0 + k/g) + 0.5*g*(sigma**2)*tau
         bid, ask = r_t - half, r_t + half
+        spr = ask - bid
         if self.cfg.spread_cap_frac is not None:
-            spr = ask - bid
+            # adjusting based on max and min spread configuration
             min_spread_abs = mid * self.cfg.min_spread_frac
             max_spread_abs = mid * self.cfg.spread_cap_frac
             tgt = max(min_spread_abs, min(max_spread_abs, spr))
-            ctr = 0.5*(ask + bid)
-            bid, ask = ctr - 0.5*tgt, ctr + 0.5*tgt
+            bid, ask = r_t - 0.5*tgt, r_t + 0.5*tgt
+
         bid = round_to_tick(bid, self.ex.tick_size)
         ask = round_to_tick(ask, self.ex.tick_size)
-        if bid >= ask: ask = bid + self.ex.tick_size
-        return bid, ask, (ask - bid)
+
+        if bid >= ask:
+            # should not be happening, but will just log in case if happens
+            print(f"bid {bid} more than ask {ask}!! warn, resetting ask to be above bid")
+            ask = bid + self.ex.tick_size
+
+        return bid, ask, (ask - bid), spr
 
     def max_qty_caps(self, bid_q: float, ask_q: float, sigma: float, mid: float) -> Tuple[float,float]:
         eq = self.equity(mid)
@@ -174,6 +156,7 @@ class MMSimulator:
         if snap is None: return None
         self._step_idx += 1
 
+        # ============= Getting the raw timestamp  =============
         ts_raw = snap.get("ts")
         if ts_raw is None:
             ms = snap.get("exchTimeMs", snap.get("timeMs", None))
@@ -186,6 +169,7 @@ class MMSimulator:
 
         ts = pd.to_datetime(ts_raw, utc=True)
 
+        # ============= mid value from current row =============
         best_bid = float(snap["bid_px"]); best_ask = float(snap["ask_px"])
         best_bid_qty = float(snap.get("bid_qty", 0.0))
         best_ask_qty = float(snap.get("ask_qty", 0.0))
@@ -196,11 +180,11 @@ class MMSimulator:
             self.vol_model.update(ts, mid, best_bid, best_ask)
             sigma = float(self.vol_model.predict())
         else:
+            print("Warning: missing vol_model")
             raw_sigma = snap.get("sigma", float("nan"))
             sigma = float(0.0 if (raw_sigma is None or np.isnan(raw_sigma)) else raw_sigma)
 
-        #
-        self.px_bid, self.px_ask, dyn_spread = self.get_as_quotes(mid, sigma)
+        self.px_bid, self.px_ask, dyn_spread, as_spread = self.get_as_quotes(mid, sigma)
         max_buy_qty, max_sell_qty = self.max_qty_caps(self.px_bid, self.px_ask, sigma, mid)
 
         trade_qty, trade_px, fee_this = 0.0, math.nan, 0.0
@@ -240,7 +224,8 @@ class MMSimulator:
 
         self.history_rows.append({
             "ts": ts, "mid": mid,
-            "bid": self.px_bid, "ask": self.px_ask, "dynamic_spread": dyn_spread,
+            "bid": self.px_bid, "ask": self.px_ask,
+            "dynamic_spread": dyn_spread, "as_spread": as_spread,
             "best_bid": best_bid, "best_ask": best_ask,
             "best_bid_qty": best_bid_qty, "best_ask_qty": best_ask_qty,
             "inv": self.inv, "cash": self.cash, "equity": eq, "pnl": pnl,
@@ -278,7 +263,8 @@ def compute_win_ratio(trade_steps: List[int], trade_equity_delta: List[float]) -
     return sum(1 for x in trade_equity_delta if x>0)/len(trade_equity_delta)
 
 def save_csv(df: pd.DataFrame, path: str):
-    cols = ["ts","mid","bid","ask","dynamic_spread","inv","cash","equity","pnl",
+    cols = ["ts","mid","bid","ask","dynamic_spread", "as_spread",
+            "inv","cash","equity","pnl",
             "sigma","trade_qty","trade_price","fee_step",
             "best_bid","best_ask","best_bid_qty","best_ask_qty"]
     df[cols].to_csv(path, index=False)
@@ -312,6 +298,34 @@ def save_html_report(df: pd.DataFrame, metrics: Dict[str,Any], win_ratio: float,
                                         font=dict(size=12))])
 
     fig.write_html(path, include_plotlyjs="cdn")
+
+def save_quotes_report(df: pd.DataFrame, path: str):
+    ts = pd.to_datetime(df["ts"])
+
+    fig = make_subplots(rows=1, cols=1,
+                        subplot_titles=("Quotes Comparison: OB vs Algo"))
+
+    # Order book best quotes
+    fig.add_trace(go.Scatter(x=ts, y=df["best_bid"], name="OB Bid",
+                             mode="lines", line=dict(color="blue", dash="dot")))
+    fig.add_trace(go.Scatter(x=ts, y=df["best_ask"], name="OB Ask",
+                             mode="lines", line=dict(color="red", dash="dot")))
+
+    # Algo quotes
+    fig.add_trace(go.Scatter(x=ts, y=df["bid"], name="Algo Bid",
+                             mode="lines", line=dict(color="blue")))
+    fig.add_trace(go.Scatter(x=ts, y=df["ask"], name="Algo Ask",
+                             mode="lines", line=dict(color="red")))
+
+    fig.update_layout(template="ggplot2", height=1200,
+                      title="Algo vs Order Book Quotes",
+                      margin=dict(l=60, r=30, t=60, b=80),
+                      xaxis=dict(title="Time"),
+                      yaxis=dict(title="Price"))
+
+    fig.write_html(path, include_plotlyjs="cdn")
+
+
 
 # ============ OKX order book CSV -> Feed ============
 def okx_top1_csv_iter(path: str) -> Iterable[Dict[str,Any]]:
