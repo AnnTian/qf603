@@ -73,6 +73,8 @@ class MMSimulator:
 
     # —— A-S quote ——
     def get_as_quotes(self, mid: float, sigma: float, drift: float = 0.0):
+        # sigma is given as relative instead of actual
+
         # A-S Base Model
         q, g, k, tau = self.inv, self.cfg.gamma, self.cfg.k, self.cfg.tau
         r_t = mid - q * g * (sigma**2) * tau + drift
@@ -325,6 +327,93 @@ def save_quotes_report(df: pd.DataFrame, path: str):
 
     fig.write_html(path, include_plotlyjs="cdn")
 
+
+def save_spread_analysis(df: pd.DataFrame, path:str, cfg: ASConfig):
+    """
+      Create a spread analysis report with 5 stacked plots:
+        1) Market spread = best_ask - best_bid
+        2) dynamic_spread
+        3) as_spread
+        4) min_spread = mid * min_spread_frac
+        5) max_spread = mid * spread_cap_frac
+      """
+    ts = pd.to_datetime(df["ts"])
+
+    best_bid = df["best_bid"]
+    best_ask = df["best_ask"]
+    dynamic_spread = df["dynamic_spread"]
+    as_spread = df["as_spread"]
+
+    # computed spreads
+    market_spread = best_ask - best_bid
+    min_spread = df["mid"] * cfg.min_spread_frac
+    max_spread = df["mid"] * cfg.spread_cap_frac
+
+
+    # figure with table row at the end
+    fig = make_subplots(
+        rows=6, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+        specs=[
+            [{"type": "xy"}],
+            [{"type": "xy"}],
+            [{"type": "xy"}],
+            [{"type": "xy"}],
+            [{"type": "xy"}],
+            [{"type": "table"}],   # table in last row
+        ],
+        subplot_titles=(
+            "Market Spread (best_ask - best_bid)",
+            "Dynamic Spread",
+            "A-S Spread",
+            f"Min Spread (mid × {cfg.min_spread_frac})",
+            f"Max Spread (mid × {cfg.spread_cap_frac})",
+            "Summary",
+        ),
+    )
+
+    fig.add_trace(go.Scatter(x=ts, y=market_spread, name="Market Spread", mode="lines"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=ts, y=dynamic_spread, name="Dynamic Spread", mode="lines"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=ts, y=as_spread, name="A-S Spread", mode="lines"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=ts, y=min_spread, name="Min Spread", mode="lines"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=ts, y=max_spread, name="Max Spread", mode="lines"), row=5, col=1)
+
+    # quick stats for footer
+    series_map = {
+        "Market Spread": market_spread,
+        "Dynamic Spread": dynamic_spread,
+        "A-S Spread": as_spread,
+        "Min Spread": min_spread,
+        "Max Spread": max_spread,
+        "Sigma": df['sigma']
+    }
+
+    names, means, medians, p95s, mins, maxs = [], [], [], [], [], []
+    for name, s in series_map.items():
+        names.append(name)
+        means.append(f"{s.mean():.6f}")
+        medians.append(f"{s.median():.6f}")
+        p95s.append(f"{s.quantile(0.95):.6f}")
+        mins.append(f"{s.min():.6f}")
+        maxs.append(f"{s.max():.6f}")
+
+    fig.add_trace(
+        go.Table(
+            header=dict(values=["Series", "Min", "Mean", "Median", "p95", "Max"],
+                        align="left"),
+            cells=dict(values=[names, mins, means, medians, p95s, maxs],
+                       align="left")
+        ),
+        row=6, col=1
+    )
+
+    fig.update_layout(
+        template="ggplot2",
+        height=1500,  # extra space for the table
+        title="Spread Analysis",
+        margin=dict(l=60, r=30, t=60, b=40),
+    )
+
+    fig.write_html(path, include_plotlyjs="cdn")
 
 
 # ============ OKX order book CSV -> Feed ============

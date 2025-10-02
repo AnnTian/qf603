@@ -10,11 +10,11 @@ if __name__ == "__main__":
     ## for the swap, maker fee: 0.02%, taker fee: 0.05%
     ex = ExchangeSpec(tick_size=0.1, lot_size=0.001, maker_fee=-0.0008, taker_fee=0.0010)
     cfg = ASConfig(
-        gamma=20.0,
+        gamma=5,
         k=8.0,
-        tau=1.0,
-        spread_cap_frac = 0.001,                     # spread cap: 0.1% of mid
-        min_spread_frac = 0.0002,                     # 0.02% of mid
+        tau=0.5,
+        spread_cap_frac = 0.0005,                     # spread cap: 0.05% of mid
+        min_spread_frac = 0.00001,                     # 0.001% of mid
         max_order_notional_frac=0.01,       # each order amount= 0.01 * equity
         min_cash_buffer_frac=0.05,          # cash buffer
         vol_scale_k=1.0,                    # higher -> smaller order qty
@@ -27,6 +27,8 @@ if __name__ == "__main__":
     csv_path = "data/merged/BTC-USDC.csv.gz"
     out_put_csv_name = "performance/benchmark_BTC-USDC.csv"
     out_put_report_name = "performance/benchmark_BTC-USDC_report.html"
+    out_put_quotes_name = "performance/benchmark_BTC-USDC_quotes.html"
+    out_put_spread_analysis = "performance/benchmark_BTC-USDC_spread.html"
     initial_cash = 100_000.0
 
     feed = OKXTop1CSVFeed(csv_path)
@@ -44,6 +46,8 @@ if __name__ == "__main__":
 
     save_csv(df, out_put_csv_name)
     save_html_report(df, metrics, win_ratio, sim.total_fees, out_put_report_name, initial_cash)
+    save_quotes_report(df, out_put_quotes_name)
+    save_spread_analysis(df, out_put_spread_analysis, cfg)
 
     end_time = time.time()
     runtime_seconds = end_time - start_time

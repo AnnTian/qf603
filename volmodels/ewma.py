@@ -23,4 +23,4 @@ class EWMAVolModel(VolatilityModelBase):
         self._sigma = math.sqrt(self.var)
 
     def predict(self) -> float:
-        return self._sigma
+        return self._sigma * self.prev_mid
