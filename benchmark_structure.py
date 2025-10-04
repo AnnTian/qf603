@@ -78,7 +78,7 @@ class MMSimulator:
         # A-S Base Model
         q, g, k, tau = self.inv, self.cfg.gamma, self.cfg.k, self.cfg.tau
         r_t = mid - q * g * (sigma**2) * tau + drift
-        half = (1.0/k)*np.log(1.0 + k/g) + 0.5*g*(sigma**2)*tau
+        half = (1.0 / g )*np.log(1.0 + g/k) + 0.5*g*(sigma**2)*tau
         bid, ask = r_t - half, r_t + half
         spr = ask - bid
         if self.cfg.spread_cap_frac is not None:
@@ -187,6 +187,14 @@ class MMSimulator:
             sigma = float(0.0 if (raw_sigma is None or np.isnan(raw_sigma)) else raw_sigma)
 
         self.px_bid, self.px_ask, dyn_spread, as_spread = self.get_as_quotes(mid, sigma)
+
+        # clip thresholds (abs $)
+        min_spread_abs = mid * self.cfg.min_spread_frac
+        max_spread_abs = mid * self.cfg.spread_cap_frac
+        # boolean flags → store as 0/1 floats for easy averaging later
+        at_min_spread = float(dyn_spread <= min_spread_abs + 1e-9)
+        at_max_spread = float(dyn_spread >= max_spread_abs - 1e-9)
+
         max_buy_qty, max_sell_qty = self.max_qty_caps(self.px_bid, self.px_ask, sigma, mid)
 
         trade_qty, trade_px, fee_this = 0.0, math.nan, 0.0
@@ -231,7 +239,8 @@ class MMSimulator:
             "best_bid": best_bid, "best_ask": best_ask,
             "best_bid_qty": best_bid_qty, "best_ask_qty": best_ask_qty,
             "inv": self.inv, "cash": self.cash, "equity": eq, "pnl": pnl,
-            "sigma": sigma, "trade_qty": trade_qty, "trade_price": trade_px, "fee_step": fee_this
+            "sigma": sigma, "trade_qty": trade_qty, "trade_price": trade_px, "fee_step": fee_this,
+            "at_min_spread": at_min_spread, "at_max_spread": at_max_spread,
         })
         return snap
 
@@ -268,7 +277,8 @@ def save_csv(df: pd.DataFrame, path: str):
     cols = ["ts","mid","bid","ask","dynamic_spread", "as_spread",
             "inv","cash","equity","pnl",
             "sigma","trade_qty","trade_price","fee_step",
-            "best_bid","best_ask","best_bid_qty","best_ask_qty"]
+            "best_bid","best_ask","best_bid_qty","best_ask_qty",
+            "at_min_spread","at_max_spread"]
     df[cols].to_csv(path, index=False)
 
 def save_html_report(df: pd.DataFrame, metrics: Dict[str,Any], win_ratio: float, total_fees: float,
@@ -363,7 +373,7 @@ def save_spread_analysis(df: pd.DataFrame, path:str, cfg: ASConfig):
         ],
         subplot_titles=(
             "Market Spread (best_ask - best_bid)",
-            "Dynamic Spread",
+            "Final Spread",
             "A-S Spread",
             f"Min Spread (mid × {cfg.min_spread_frac})",
             f"Max Spread (mid × {cfg.spread_cap_frac})",
@@ -380,7 +390,7 @@ def save_spread_analysis(df: pd.DataFrame, path:str, cfg: ASConfig):
     # quick stats for footer
     series_map = {
         "Market Spread": market_spread,
-        "Dynamic Spread": dynamic_spread,
+        "Final Spread": dynamic_spread,
         "A-S Spread": as_spread,
         "Min Spread": min_spread,
         "Max Spread": max_spread,
@@ -395,6 +405,19 @@ def save_spread_analysis(df: pd.DataFrame, path:str, cfg: ASConfig):
         p95s.append(f"{s.quantile(0.95):.6f}")
         mins.append(f"{s.min():.6f}")
         maxs.append(f"{s.max():.6f}")
+
+    # add ratio of spread hitting min/max here
+    min_clip = float(df["at_min_spread"].mean()) if "at_min_spread" in df else np.nan
+    max_clip = float(df["at_max_spread"].mean()) if "at_max_spread" in df else np.nan
+
+    # Append rows; only "Mean" is used for these
+    names.extend(["% of Min Spread", "% of Max Spread"])
+    mins.extend(["", ""])
+    means.extend([f"{min_clip:.2%}", f"{max_clip:.2%}"])
+    medians.extend(["", ""])
+    p95s.extend(["", ""])
+    maxs.extend(["", ""])
+
 
     fig.add_trace(
         go.Table(
