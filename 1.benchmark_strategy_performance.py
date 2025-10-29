@@ -34,14 +34,14 @@ if __name__ == "__main__":
     # define models to benchmark
     models = {
         "EWMA": EWMAVolModel(lam=0.97),
-        "GARCH": GARCHVolModel(window=600, p=3, q=1, refit_freq=10, dist='t', fast_mode=True),
+        "GARCH": GARCHVolModel(window=600, p=3, q=1, refit_freq=600, dist='t', fast_mode=True),
         "Realized": RealizedVolModel(window=60),
     }
 
     leaderboard_rows = []
 
     for name, vol_model in models.items():
-        print(f"\n=== Running model: {name} ===")
+        print(f"\n============ Running model: {name} ============")
         feed = OKXTop1CSVFeed(csv_path)  # fresh iterator each run
         start_time = time.time()
         sim = MMSimulator(feed, ex, cfg, initial_cash=initial_cash, step_seconds=1.0, vol_model=vol_model)
