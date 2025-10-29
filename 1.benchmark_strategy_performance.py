@@ -1,7 +1,7 @@
 import time
 
 from benchmark_structure import *
-from volmodels import EWMAVolModel, RealizedVolModel
+from volmodels import EWMAVolModel, RealizedVolModel, GARCHVolModel
 
 if __name__ == "__main__":
     # need to fill in diff tick/lot/fee based on the trading pair
@@ -34,7 +34,8 @@ if __name__ == "__main__":
     feed = OKXTop1CSVFeed(csv_path)
 
     # vol_model
-    vol_model = EWMAVolModel(lam=0.97)
+    # vol_model = EWMAVolModel(lam=0.97)
+    vol_model= GARCHVolModel(window=1000)
     # vol_model = RealizedVolModel(window=60)
 
     start_time = time.time()
