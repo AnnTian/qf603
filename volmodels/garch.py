@@ -4,27 +4,31 @@ import numpy as np
 import pandas as pd 
 from .base import VolatilityModelBase
 
-#TODO: check if we should implement multivariate garch model (for highly correlated assets)
 class GARCHVolModel(VolatilityModelBase):
     """
     GARCH volatility model for real-time volatility estimation.
     Uses a rolling window of returns to fit GARCH(3,1) model.
     """
     
-    def __init__(self, window: int = 1000, p: int = 3, q: int = 1, refit_freq: int = 20, dist: str = 't'):
+    def __init__(self, window: int = 600, p: int = 3, q: int = 1, refit_freq: int = 10, dist: str = 't',
+                 fast_mode: bool = True, min_window_ratio: float = 0.8):
         """
         Args:
-            window: number of past returns to use for GARCH(1,1) fitting
+            window: number of past returns to use for GARCH fitting
             p: number of ARCH terms
             q: number of GARCH terms
             refit_freq: frequency of model refitting 
             dist: t distribution for residuals (heavy tails)
+            fast_mode: use faster but less accurate fitting options
+            min_window_ratio: minimum ratio of valid data required for refitting
         """
         self.window = window
         self.p = p
         self.q = q
         self.refit_freq = refit_freq
-        self.dist = dist 
+        self.dist = dist
+        self.fast_mode = fast_mode
+        self.min_window_ratio = min_window_ratio
         self.prev_mid = None
         self.returns = []
         self._sigma = 0.0
@@ -52,14 +56,13 @@ class GARCHVolModel(VolatilityModelBase):
         returns_array = np.array(self.returns[-self.window:])
 
         returns_array = returns_array[np.isfinite(returns_array)]
-        if returns_array.size < self.window * 0.8:
+        if returns_array.size < self.window * self.min_window_ratio:
             return
 
         finite_mask = np.isfinite(returns_array)
         if not finite_mask.all():
             returns_array = returns_array[finite_mask]
         if returns_array.size < self.window:
-            # not enough valid data to refit
             return
 
         # check variance 
@@ -81,10 +84,10 @@ class GARCHVolModel(VolatilityModelBase):
 
         try: 
             fitted_model = model.fit(disp='off',
-                                    show_warning=False,
-                                    update_freq=0,
-                                    options={'maxiter':150, 'ftol': 1e-4}
-                                    )
+                                        show_warning=False,
+                                        update_freq=0,
+                                        options={'maxiter':150, 'ftol': 1e-4}
+                                        )
             
             if not fitted_model.converged:
                 raise RuntimeError("GARCH model failed to converge.")
@@ -100,10 +103,8 @@ class GARCHVolModel(VolatilityModelBase):
             else: 
                 self._sigma = float(np.std(returns_array))
 
-    # TODO: need to check on this logic  
     def predict(self) -> float:
         return self._sigma  
 
 
-    #TODO: split into train and test 80-20? then converge on ewma 
 
