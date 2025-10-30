@@ -266,8 +266,42 @@ def compute_metrics(df: pd.DataFrame) -> Dict[str, Any]:
     run_max = eq.cummax(); dd = eq/run_max - 1.0; mdd = float(dd.min())
     end_i = int(dd.idxmin()); start_i = int((eq[:end_i]).idxmax()) if end_i>0 else 0
     dd_secs = (ts.iloc[end_i]-ts.iloc[start_i]).total_seconds() if end_i>start_i else 0.0
+
+    # --- RMSE of volatility forecast ---
+    # Realized volatility: rolling std of returns (window=20)
+    eps = 1e-12
+    realized_vol = rets.rolling(window=20).std(ddof=1)
+    realized_var = np.maximum(realized_vol ** 2, eps)
+
+    forecast_vol = df["sigma"].astype(float).replace([np.inf, -np.inf], np.nan).fillna(method="ffill")
+    forecast_var = np.maximum(forecast_vol ** 2, eps)
+
+    aligned = pd.concat([realized_var, forecast_var], axis=1, join="inner").dropna()
+    realized_var, forecast_var = aligned.iloc[:, 0], aligned.iloc[:, 1]
+    # Align lengths
+    # min_len = min(len(realized_vol), len(forecast_vol))
+    # realized_vol = realized_vol.iloc[-min_len:]
+    # forecast_vol = forecast_vol.iloc[-min_len:]
+    rmse_vol = np.sqrt(np.mean((np.sqrt(forecast_var) - np.sqrt(realized_var)) ** 2))
+    mse_vol = np.mean((np.sqrt(forecast_var) - np.sqrt(realized_var)) ** 2)
+
+    ratio = np.clip(realized_var / forecast_var, eps, 1/eps)
+    qlike_vol = np.mean(ratio - np.log(ratio) - 1)
+    # --- Value at Risk (VaR) accuracy ---
+    # 1-day VaR at 95% confidence: VaR = forecast_vol * norm.ppf(0.05)
+    from scipy.stats import norm
+    var_95 = -forecast_vol * norm.ppf(0.05) * eq.shift(1)  # VaR is negative, so use -ppf
+    pnl = eq.diff().fillna(0.0)
+    # Count breaches: actual loss > VaR
+    var_breaches = ((-pnl) > var_95).sum()
+    var_total = len(var_95)
+    var_accuracy = 1.0 - (var_breaches / var_total) if var_total > 0 else float("nan")
+
     return {"CAGR": cagr, "Sharpe": sharpe, "Cumulative Return": cumret,
-            "Max Drawdown": mdd, "Max DD Period (seconds)": dd_secs, "Final Equity": final}
+            "Max Drawdown": mdd, "Max DD Period (seconds)": dd_secs, "Final Equity": final,
+            "RMSE Volatility Forecast": rmse_vol, "MSE Volatility Forecast": mse_vol,
+            "QLIKE Volatility Forecast": qlike_vol,
+            "VaR Accuracy (95%)": var_accuracy}
 
 def compute_win_ratio(trade_steps: List[int], trade_equity_delta: List[float]) -> float:
     if not trade_steps: return float("nan")
