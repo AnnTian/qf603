@@ -7,6 +7,8 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import time
+from tqdm import tqdm
 
 from volmodels import VolatilityModelBase
 
@@ -249,7 +251,22 @@ class MMSimulator:
         self.cash, self.inv, self.total_fees = self.initial_cash, 0.0, 0.0
         self.history_rows.clear(); self.trade_steps.clear(); self.trade_equity_delta.clear()
         self.equity_prev, self._step_idx = None, 0
-        while not self.feed.done(): self.step()
+
+        total_steps = len(self.feed.rows)
+        start_time = time.time()
+
+        print(f"[MMSimulator] Starting simulation for {total_steps:,} ticks...")
+
+        # tqdm automatically handles ETA, elapsed time, and rate
+        with tqdm(total=total_steps, desc="Simulating", unit="ticks", ncols=100) as pbar:
+            while not self.feed.done():
+                self.step()
+                pbar.update(1)  # advance the bar by one tick
+
+        total_elapsed = time.time() - start_time
+        print(f"[MMSimulator] Completed {self._step_idx:,} ticks in {total_elapsed:.1f}s "
+              f"({self._step_idx / total_elapsed:.1f} ticks/sec)")
+
         df = pd.DataFrame(self.history_rows).sort_values("ts").reset_index(drop=True)
         return df
 
