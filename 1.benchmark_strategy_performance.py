@@ -1,7 +1,7 @@
 import time
-
+import pandas as pd
 from benchmark_structure import *
-from volmodels import EWMAVolModel, RealizedVolModel
+from volmodels import EWMAVolModel, RealizedVolModel, GARCHVolModel, HARVolModel
 
 if __name__ == "__main__":
     # need to fill in diff tick/lot/fee based on the trading pair
@@ -31,35 +31,74 @@ if __name__ == "__main__":
     out_put_spread_analysis = "performance/benchmark_BTC-USDC_spread.html"
     initial_cash = 100_000.0
 
-    feed = OKXTop1CSVFeed(csv_path)
+    # define models to benchmark
 
     # vol_model
-    vol_model = EWMAVolModel(lam=0.97)
+    # vol_model = EWMAVolModel(lam=0.97)
     # vol_model = RealizedVolModel(window=60)
+    # vol_model = GARCHVolModel(window=600, p=3, q=1, refit_freq=600, dist='t', fast_mode=True)
+    models = {
+        "EWMA": EWMAVolModel(lam=0.97),
+        "GARCH": GARCHVolModel(window=1000, p=3, q=1, refit_freq=600, dist='t', fast_mode=True),
+        "Realized": RealizedVolModel(window=60),
+        "HAR": HARVolModel()
+    }
+    leaderboard_rows = []
+    
+    for name, vol_model in models.items():
+        print(f"\n============ Running model: {name} ============")
+        feed = OKXTop1CSVFeed(csv_path)  # fresh iterator each run
+        start_time = time.time()
+        sim = MMSimulator(feed, ex, cfg, initial_cash=initial_cash, step_seconds=1.0, vol_model=vol_model)
+        df = sim.run()
 
-    start_time = time.time()
-    sim = MMSimulator(feed, ex, cfg, initial_cash=initial_cash, step_seconds=1.0, vol_model=vol_model)
-    df = sim.run()
+        metrics = compute_metrics(df)
+        win_ratio = compute_win_ratio(sim.trade_steps, sim.trade_equity_delta)
 
-    metrics = compute_metrics(df)
-    win_ratio = compute_win_ratio(sim.trade_steps, sim.trade_equity_delta)
+        save_csv(df, out_put_csv_name)
+        save_html_report(df, metrics, win_ratio, sim.total_fees, out_put_report_name, initial_cash)
+        save_quotes_report(df, out_put_quotes_name)
+        save_spread_analysis(df, out_put_spread_analysis, cfg)
 
-    save_csv(df, out_put_csv_name)
-    save_html_report(df, metrics, win_ratio, sim.total_fees, out_put_report_name, initial_cash)
-    save_quotes_report(df, out_put_quotes_name)
-    save_spread_analysis(df, out_put_spread_analysis, cfg)
-
-    end_time = time.time()
-    runtime_seconds = end_time - start_time
-
-    print("Final Equity:", metrics["Final Equity"])
-    print("CAGR:", f"{metrics['CAGR']:.2%}", "Sharpe:", f"{metrics['Sharpe']:.2f}",
-          "CumRet:", f"{metrics['Cumulative Return']:.2%}",
-          "MDD:", f"{metrics['Max Drawdown']:.2%}",
-          "DD Period(s):", f"{metrics['Max DD Period (seconds)']:.0f}",
-          "Win:", f"{win_ratio:.2%}",
-          "Fees:", f"{sim.total_fees:.2f}")
-    print("Simulation Time:", f"{runtime_seconds:.2f} seconds")
+        end_time = time.time()
+        runtime_seconds = end_time - start_time
+        leaderboard_rows.append({
+            "model": name,
+            "Final Equity": metrics["Final Equity"],
+            "CAGR": metrics["CAGR"],
+            "Sharpe": metrics["Sharpe"],
+            "Cumulative Return": metrics["Cumulative Return"],
+            "Max Drawdown": metrics["Max Drawdown"],
+            "Max DD Period (seconds)": metrics["Max DD Period (seconds)"],
+            "Win Ratio": win_ratio,
+            "Total Fees": sim.total_fees,
+            "Runtime (s)": runtime_seconds,
+            "RMSE Volatility Forecast:": metrics["RMSE Volatility Forecast"],
+            "VaR Accuracy (95%)": metrics["VaR Accuracy (95%)"],
+            "MSE Volatility Forecast": metrics["MSE Volatility Forecast"],
+            "QLIKE Volatility Forecast": metrics["QLIKE Volatility Forecast"]
+        })
+        print("Final Equity:", metrics["Final Equity"])
+        print("CAGR:", f"{metrics['CAGR']:.2%}", "Sharpe:", f"{metrics['Sharpe']:.2f}",
+            "CumRet:", f"{metrics['Cumulative Return']:.2%}",
+            "MDD:", f"{metrics['Max Drawdown']:.2%}",
+            "DD Period(s):", f"{metrics['Max DD Period (seconds)']:.0f}",
+            "Win:", f"{win_ratio:.2%}",
+            "Fees:", f"{sim.total_fees:.2f}",
+            "RMSE Volatility Forecast:", f"{metrics['RMSE Volatility Forecast']:.6f}",
+            "VaR Accuracy (95%):", f"{metrics['VaR Accuracy (95%)']:.2%}",
+            "MSE Volatility Forecast:", f"{metrics['MSE Volatility Forecast']:.6f}",
+            "QLIKE Volatility Forecast:", f"{metrics['QLIKE Volatility Forecast']:.6f}"
+            )
+        print("Simulation Time:", f"{runtime_seconds:.2f} seconds")
+    # write combined leaderboard
+    try:
+        leaderboard_df = pd.DataFrame(leaderboard_rows)
+        leaderboard_df.to_csv("performance/hparam_leaderboard.csv", index=False)
+        print("\nSaved leaderboard to performance/hparam_leaderboard.csv")
+        print(leaderboard_df.sort_values("Sharpe", ascending=False).to_string(index=False))
+    except Exception as e:
+        print("Failed to write leaderboard:", e)
 
 
 
